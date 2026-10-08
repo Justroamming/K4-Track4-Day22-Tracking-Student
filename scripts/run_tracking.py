@@ -28,7 +28,8 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-from boxmot.tracker_zoo import create_tracker, get_tracker_config
+# boxmot v25+ API: tracker classes are imported directly
+from boxmot import ByteTrack, OcSort, BotSort, StrongSort, DeepOcSort
 
 # ---------------------------------------------------------------------------
 # Các biến CỐ ĐỊNH cho cả lớp — KHÔNG sửa khi làm bài chính. Nếu muốn thử
@@ -41,6 +42,75 @@ REID_WEIGHTS = Path("osnet_x0_25_msmt17.pt")  # tự tải về lần chạy đ�
 
 TRACKER_CHOICES = ["bytetrack", "ocsort", "botsort", "strongsort", "deepocsort"]
 USES_APPEARANCE = {"botsort", "strongsort", "deepocsort"}
+
+# Map tracker name to class and default constructor kwargs
+# These are the tracker-internal parameters (not detector conf/iou)
+TRACKER_KWARGS = {
+    "bytetrack": {
+        "class": ByteTrack,
+        "defaults": {
+            "track_thresh": 0.45,
+            "match_thresh": 0.8,
+            "track_buffer": 25,
+            "frame_rate": 30,
+        },
+    },
+    "ocsort": {
+        "class": OcSort,
+        "defaults": {
+            "min_conf": 0.1,
+            "delta_t": 3,
+            "inertia": 0.2,
+            "use_byte": False,
+        },
+    },
+    "botsort": {
+        "class": BotSort,
+        "defaults": {
+            "track_high_thresh": 0.5,
+            "track_low_thresh": 0.1,
+            "new_track_thresh": 0.6,
+            "track_buffer": 30,
+            "match_thresh": 0.8,
+            "proximity_thresh": 0.5,
+            "appearance_thresh": 0.25,
+            "use_cmc": True,
+            "cmc_method": "ecc",
+            "frame_rate": 30,
+            "fuse_first_associate": False,
+            "use_embeddings": True,
+            "second_match_thresh": 0.5,
+            "unconfirmed_match_thresh": 0.7,
+            "unconfirmed_emb_scale": 2.0,
+            "removed_stracks_buffer": 100,
+        },
+    },
+    "strongsort": {
+        "class": StrongSort,
+        "defaults": {
+            "min_conf": 0.1,
+            "max_cos_dist": 0.2,
+            "max_iou_dist": 0.7,
+            "n_init": 3,
+            "nn_budget": 100,
+            "mc_lambda": 0.98,
+            "ema_alpha": 0.9,
+        },
+    },
+    "deepocsort": {
+        "class": DeepOcSort,
+        "defaults": {
+            "delta_t": 3,
+            "inertia": 0.2,
+            "w_association_emb": 0.5,
+            "alpha_fixed_emb": 0.95,
+            "aw_param": 0.5,
+            "use_embeddings": True,
+            "cmc_off": False,
+            "aw_off": False,
+        },
+    },
+}
 
 
 def iter_frames(source: Path) -> Iterator[Tuple[int, np.ndarray]]:
@@ -117,6 +187,29 @@ def detect(detector: YOLO, frame: np.ndarray, conf: float, iou: float) -> np.nda
     return np.hstack([xyxy, conf_arr[:, None], cls_arr[:, None]])
 
 
+def create_tracker_instance(tracker_name: str, device: str) -> "BaseTracker":
+    """Tạo instance tracker từ tên.
+
+    Args:
+        tracker_name: Tên tracker (bytetrack, ocsort, botsort, strongsort, deepocsort).
+        device: Thiết bị chạy ('cpu', 'cuda:0', ...).
+
+    Returns:
+        Instance tracker đã khởi tạo.
+    """
+    info = TRACKER_KWARGS[tracker_name]
+    tracker_class = info["class"]
+    kwargs = info["defaults"].copy()
+
+    # Add Re-ID weights for appearance-based trackers
+    if tracker_name in USES_APPEARANCE:
+        kwargs["reid_weights"] = str(REID_WEIGHTS)
+        kwargs["device"] = device
+        kwargs["half"] = False
+
+    return tracker_class(**kwargs)
+
+
 def run(args: argparse.Namespace) -> None:
     """Detect, track, rồi ghi file kết quả và video xem thử nếu được yêu cầu.
 
@@ -134,14 +227,7 @@ def run(args: argparse.Namespace) -> None:
     if args.tracker in USES_APPEARANCE:
         print(f"              tracker này dùng Re-ID: {REID_WEIGHTS.name} (tự tải nếu chưa có)")
     detector = YOLO(DETECTOR_WEIGHTS)
-    tracker = create_tracker(
-        tracker_type=args.tracker,
-        tracker_config=get_tracker_config(args.tracker),
-        reid_weights=REID_WEIGHTS,
-        device=args.device,
-        half=False,
-        per_class=False,
-    )
+    tracker = create_tracker_instance(args.tracker, args.device)
 
     writer = None
     rows = []

@@ -5,3 +5,5 @@ TrackEval/
 __pycache__/
 .ipynb_checkpoints/
 .pytest_cache/
+cv_robotics_lab21
+data_lab21
